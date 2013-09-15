@@ -11,9 +11,8 @@ status
 title
 product
 module
-patch ("y" if there is an attachment / pull request, else "n")
-feature ("y" if it is a feature, else "n")
-
+reviews_needed
+reviews_done
 """
 import argparse
 from collections import defaultdict
@@ -128,25 +127,49 @@ class Bugzilla(IssueSource):
         for the same-named query string parameter.
 
         """
+        print "init fileters: %s" % filters
         self.filters = filters
 
 
     def get_all(self):
         """Yield issues in standard dictionary format."""
         for issue in self.get_issues():
-            yield {
-                "source": "bugzilla",
-                "id": issue["id"],
-                "url": self.BUG_URL_FORMAT.format(issue["id"]),
-                "assigned": issue["assigned_to"]["name"],
-                "status": "closed" if issue["status"] in self.CLOSED_STATES else "open",
-                "title": issue["summary"],
-                "product": issue["product"],
-                "module": issue["component"],
-                "patch": "y" if "attachments" in issue else "n",
-                "feature": "y" if "feature" in issue["keywords"] else "n"
+            attachments = self.get_attachment_data(issue["id"])
+            if len(attachments["attachments"]) != 0:
+                review_needed, review_done = self.get_patch_reviewers(attachments)
+                yield {
+                    "source": "bugzilla",
+                    "id": issue["id"],
+                    "url": self.BUG_URL_FORMAT.format(issue["id"]),
+                    "assigned": issue["assigned_to"]["name"],
+                    "status": "closed" if issue["status"] in self.CLOSED_STATES else "open",
+                    "title": issue["summary"],
+                    "product": issue["product"],
+                    "module": issue["component"],
+                    "reviews_needed": review_needed,
+                    "reviews_done": review_done
                 }
 
+    def get_patch_reviewers(self, attachments):
+        reviews_needed = ""
+        reviews_done = ""
+        for a in attachments["attachments"]:
+            if not a["is_obsolete"] and a["is_patch"] and "flags" in a:
+                for f in a["flags"]:
+                    # There can be multiple reviewers for a bug, they
+                    # show up in multiple flag data structures
+                    if f["name"] == "review":
+                        if f["status"] == "+":
+                            reviews_done += "|" + f["setter"]["name"]
+                        elif (f["status"] == "?") and ("requestee" in f):
+                            reviews_needed += "|" + f["requestee"]["name"]
+        return reviews_needed, reviews_done
+
+    def get_attachment_data(self, bugid):
+        url =  self.API_BASE + "/" + str(bugid) + '/attachment?/attachmentdata=1'
+        log.info("Fetching {0}".format(url))
+        a = json.loads(urlopen(url).read())
+        return a
 
     def get_issues(self):
         """Yield Bugzilla issues in Bugzilla REST API JSON format."""
@@ -185,7 +208,9 @@ def parse_source(definition):
             kwargs[key].append(val)
         else:
             args.append(bit)
-
+    print "args: %s" % args
+    print "kwargs: %s" % kwargs
+    print "source_class: %s" % source_class
     return source_class(*args, **kwargs)
 
 
@@ -223,8 +248,8 @@ def main(output):
         "title",
         "product",
         "module",
-        "patch",
-        "feature",
+        "reviews_needed",
+        "reviews_done",
         ]
 
 
